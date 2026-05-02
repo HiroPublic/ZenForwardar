@@ -16,7 +16,8 @@ export const EnvSchema = z.object({
   TRIPIT_FORWARD_EMAIL: envDefault("plans@tripit.com").pipe(z.string().email()),
   HOTELSLASH_FORWARD_EMAIL: envDefault("save@hotelslash.com").pipe(z.string().email()),
   EXCHANGE_RATE_API_KEY: envOptional(),
-  EXCHANGE_RATE_PROVIDER: envDefault("mock")
+  EXCHANGE_RATE_PROVIDER: envDefault("mock"),
+  EXCHANGE_RATE_CACHE_PATH: envDefault(".cache/exchange-rates.json")
 });
 
 export function parseConfig(env: NodeJS.ProcessEnv) {
@@ -31,9 +32,9 @@ export const isLiveMode =
   Boolean(config.NOTION_API_KEY && config.NOTION_HOTEL_RESERVATION_DATABASE_ID);
 
 function envDefault(value: string) {
-  return z.preprocess((input) => (input === "" || input === undefined ? value : input), z.string());
+  return z.preprocess((input) => (input === "" ? value : input), z.string()).default(value);
 }
 
 function envOptional() {
-  return z.preprocess((input) => (input === "" ? undefined : input), z.string().optional());
+  return z.string().optional().transform((input) => (input === "" ? undefined : input));
 }

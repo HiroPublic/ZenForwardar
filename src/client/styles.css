@@ -79,6 +79,7 @@ a {
 .shutdown-action,
 .approve-button,
 .secondary-button,
+.notion-only-button,
 .editor-toolbar button {
   display: inline-flex;
   align-items: center;
@@ -113,10 +114,18 @@ a {
   color: #dff7e9;
 }
 
+.hotelslash-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .primary-action:disabled,
+.auth-action:disabled,
 .shutdown-action:disabled,
 .approve-button:disabled,
-.secondary-button:disabled {
+.secondary-button:disabled,
+.notion-only-button:disabled {
   cursor: wait;
   opacity: 0.72;
 }
@@ -245,14 +254,27 @@ a {
   flex-wrap: wrap;
 }
 
+.primary-action-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 180px;
+}
+
 .approve-button,
-.secondary-button {
+.secondary-button,
+.notion-only-button {
   padding: 0 18px;
 }
 
 .approve-button {
   background: #285f55;
   color: #fff;
+}
+
+.notion-only-button {
+  border: 1px solid #9fb8ae;
+  background: #e6efe9;
+  color: #24463f;
 }
 
 .secondary-button {
@@ -266,6 +288,113 @@ a {
   grid-template-columns: minmax(250px, 360px) minmax(0, 1fr);
   gap: 22px;
   padding-top: 22px;
+}
+
+.proposal-panel {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+}
+
+.proposal-stay {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-bottom: 1px solid #dce4dc;
+}
+
+.proposal-stay h3,
+.proposal-stay p,
+.proposal-column h4,
+.proposal-subtitle,
+.proposal-empty {
+  margin: 0;
+}
+
+.proposal-stay h3 {
+  color: #20342e;
+  font-size: 20px;
+}
+
+.proposal-stay p {
+  color: #60736b;
+  font-weight: 700;
+}
+
+.proposal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.proposal-column {
+  border: 1px solid #dce4dc;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.proposal-column h4 {
+  font-size: 16px;
+}
+
+.proposal-subtitle {
+  padding-top: 4px;
+  color: #66756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.compact-fact {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid #edf1ed;
+}
+
+.compact-fact:last-child {
+  border-bottom: 0;
+}
+
+.compact-fact span {
+  color: #66756e;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.compact-fact strong {
+  color: #23342f;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.arrangement-fact {
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.arrangement-fact span,
+.arrangement-fact strong {
+  white-space: nowrap;
+}
+
+.arrangement-fact.checked span,
+.arrangement-fact.checked strong {
+  color: #c93535;
+}
+
+.proposal-empty {
+  padding-top: 16px;
+  color: #66756e;
+  line-height: 1.55;
+}
+
+.proposal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .metadata-panel,
@@ -389,7 +518,8 @@ textarea {
 
 @media (max-width: 900px) {
   .app-shell,
-  .review-grid {
+  .review-grid,
+  .proposal-grid {
     grid-template-columns: 1fr;
   }
 
@@ -403,7 +533,9 @@ textarea {
 
   .review-actions,
   .approve-button,
-  .secondary-button {
+  .secondary-button,
+  .notion-only-button,
+  .primary-action-stack {
     width: 100%;
   }
 }

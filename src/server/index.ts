@@ -6,7 +6,8 @@ import path from "node:path";
 import { z } from "zod";
 import { config, isLiveMode } from "./config";
 import { buildOAuthClient, getAuthUrl, hasGmailTokens, isGmailConfigured } from "./services/gmail";
-import { approveForward, dismissForwardAndReload, listPending, syncReservations } from "./workflow";
+import { finishHotelSlashLoginSession, getHotelSlashLoginStatus, startHotelSlashLoginSession } from "./services/hotelslash";
+import { approveForward, decideLowPriceProposal, dismissForwardAndReload, listPending, registerForwardInNotionOnly, syncReservations } from "./workflow";
 import { applyBookingSiteBackfill, applyConfirmationUrlBackfill, planBookingSiteBackfill, planConfirmationUrlBackfill } from "./services/backfill";
 import { archiveRecordedReservationEmails } from "./services/archive";
 
@@ -33,11 +34,13 @@ app.post("/api/shutdown", (_req, res) => {
   res.json({ ok: true });
 
   setTimeout(() => {
+    const parentPid = process.ppid;
     try {
-      process.kill(process.ppid, "SIGINT");
+      process.kill(parentPid, "SIGTERM");
     } catch {
-      process.exit(0);
+      // Fall through and stop this process as a last resort.
     }
+    process.exit(0);
   }, 100);
 });
 
@@ -47,6 +50,26 @@ app.get("/api/auth/status", (req, res) => {
     gmailAuthenticated: hasGmailTokens(req.session?.tokens),
     account: config.GMAIL_AUTH_ACCOUNT
   });
+});
+
+app.get("/api/hotelslash/status", (_req, res) => {
+  res.json(getHotelSlashLoginStatus());
+});
+
+app.post("/api/hotelslash/login/start", async (_req, res, next) => {
+  try {
+    res.json(await startHotelSlashLoginSession());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/hotelslash/login/finish", async (_req, res, next) => {
+  try {
+    res.json(await finishHotelSlashLoginSession());
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/auth/google", (_req, res) => {
@@ -88,10 +111,29 @@ app.post("/api/forward/:id/approve", async (req, res, next) => {
   }
 });
 
+app.post("/api/forward/:id/notion-only", async (req, res, next) => {
+  try {
+    const result = await registerForwardInNotionOnly(req.params.id, req.session?.tokens);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/forward/:id/dismiss-and-reload", async (req, res, next) => {
   try {
     const items = await dismissForwardAndReload(req.params.id, req.session?.tokens);
     res.json({ items });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/proposal/:id/decision", async (req, res, next) => {
+  try {
+    const body = z.object({ decision: z.enum(["accepted", "unaccepted"]) }).parse(req.body);
+    const result = await decideLowPriceProposal(req.params.id, body.decision, req.session?.tokens);
+    res.json(result);
   } catch (error) {
     next(error);
   }

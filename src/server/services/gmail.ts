@@ -46,9 +46,30 @@ export function buildCandidateQuery() {
     "itinerary",
     "confirmation",
     "\"travel confirmation\"",
-    "\"hotel confirmed\""
+    "\"hotel confirmed\"",
+    "\"Lower Rate Found on Your Trip\""
   ].join(" ");
   return `in:inbox newer_than:7d -label:"${labels.processed}" -from:do-not-reply@tripit.com {${terms}}`;
+}
+
+export function isLowerRateEmail(email: SourceEmail) {
+  return /Lower Rate Found on Your Trip/i.test(email.subject);
+}
+
+export function extractLowerRateButtonUrl(body: string): string | undefined {
+  const anchorPattern = /<a\b[^>]*href=(["'])(?<href>.*?)\1[^>]*>[\s\S]*?CLICK\s+HERE\s+TO\s+SEE\s+YOUR\s+RATES!?[\s\S]*?<\/a>/i;
+  const anchorMatch = body.match(anchorPattern);
+  const href = anchorMatch?.groups?.href;
+  if (href) return decodeHtmlAttribute(href);
+
+  const textIndex = body.search(/CLICK\s+HERE\s+TO\s+SEE\s+YOUR\s+RATES!?/i);
+  if (textIndex >= 0) {
+    const before = body.slice(Math.max(0, textIndex - 1500), textIndex);
+    const nearbyUrl = before.match(/https?:\/\/[^\s"'<>]+/g)?.at(-1);
+    if (nearbyUrl) return decodeHtmlAttribute(nearbyUrl);
+  }
+
+  return body.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 }
 
 export async function fetchCandidateEmails(tokens?: unknown): Promise<SourceEmail[]> {
@@ -208,6 +229,15 @@ function wrapBase64(value: string) {
 
 function isSelfGeneratedForward(email: SourceEmail) {
   return email.subject.startsWith("Hotel Reservation - ") && email.body.includes("Original Email Type:");
+}
+
+function decodeHtmlAttribute(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 function mockEmails(): SourceEmail[] {

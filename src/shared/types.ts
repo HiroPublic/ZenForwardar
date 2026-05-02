@@ -4,7 +4,10 @@ export type EmailType =
   | "Reservation Confirmation"
   | "Change Notice"
   | "Cancellation Notice"
-  | "HotelSlash Price Alert";
+  | "HotelSlash Price Alert"
+  | "Low Price Proposal"
+  | "Proposal accepted"
+  | "Proposal Unaccepted";
 
 export type ProcessingState = "pending" | "processed" | "error";
 
@@ -34,6 +37,39 @@ export interface ReservationMetadata {
   relatedReservationId?: string;
 }
 
+export interface LowPriceProposal {
+  pageUrl: string;
+  priceCurrency: string;
+  priceAmount: number;
+  roomType: string;
+  conditions: string[];
+  currentReservation?: CurrentReservationInfo;
+  previousProposal?: PreviousProposal;
+  notionPageId?: string;
+  hotelArrangement?: boolean;
+  bookingSite?: string;
+}
+
+export interface CurrentReservationInfo {
+  priceCurrency?: string;
+  priceAmount?: number;
+  roomType?: string;
+  conditions?: string[];
+  cancellationDeadline?: string;
+  paymentTerms?: string;
+}
+
+export interface PreviousProposal {
+  pageId: string;
+  title: string;
+  receivedAt?: string;
+  priceCurrency?: string;
+  priceAmount?: number;
+  roomType?: string;
+  conditions?: string[];
+  emailType?: EmailType;
+}
+
 export interface AuditEvent {
   at: string;
   step: string;
@@ -44,6 +80,7 @@ export interface AuditEvent {
 
 export interface PendingForward {
   id: string;
+  kind?: "forward" | "lowPriceProposal";
   gmailMessageId: string;
   gmailUrl: string;
   from: string;
@@ -53,6 +90,7 @@ export interface PendingForward {
   generatedSubject: string;
   generatedBody: string;
   internalJson: ReservationMetadata;
+  proposal?: LowPriceProposal;
   state: ProcessingState;
   auditLog: AuditEvent[];
 }
@@ -62,4 +100,10 @@ export interface ForwardResult {
   tripItSentAt: string;
   hotelSlashSentAt: string;
   notionPageId?: string;
+}
+
+export interface NotionOnlyResult {
+  item: PendingForward;
+  notionPageId?: string;
+  hotelArrangement: boolean;
 }

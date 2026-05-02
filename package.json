@@ -24,6 +24,7 @@
     "googleapis": "^166.0.0",
     "lucide-react": "^0.475.0",
     "openai": "^6.7.0",
+    "playwright": "^1.59.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",
