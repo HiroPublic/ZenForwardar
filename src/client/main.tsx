@@ -6,7 +6,7 @@ import type { PendingForward } from "../shared/types";
 import "./styles.css";
 
 type ApiState = "idle" | "loading" | "error";
-type ShutdownState = "idle" | "closing";
+type ShutdownState = "idle" | "closing" | "closed";
 
 interface AuthStatus {
   gmailConfigured: boolean;
@@ -213,6 +213,8 @@ function App() {
     } catch {
       // The server may close the connection while shutting down.
     }
+    setShutdownState("closed");
+    setMessage("アプリを終了しました。必要に応じてこのブラウザタブを閉じてください。");
   }
 
   return (
@@ -249,9 +251,9 @@ function App() {
           </button>
         </div>
 
-        <button className="shutdown-action" onClick={shutdown} disabled={shutdownState === "closing"}>
+        <button className="shutdown-action" onClick={shutdown} disabled={shutdownState !== "idle"}>
           {shutdownState === "closing" ? <Loader2 className="spin" size={18} /> : <Power size={18} />}
-          終了
+          {shutdownState === "closed" ? "終了済み" : "終了"}
         </button>
 
         <div className={`status ${apiState}`}>
@@ -279,7 +281,7 @@ function App() {
                 <span className="queue-title">{item.metadata.hotelName}</span>
                 <span className="queue-meta">{item.metadata.emailType}</span>
                 <span className="queue-date">
-                  {item.metadata.checkIn ?? "TBD"} - {item.metadata.checkOut ?? "TBD"}
+                  {formatStayDate(item.metadata.checkIn)} - {formatStayDate(item.metadata.checkOut)}
                 </span>
               </motion.button>
             ))}
@@ -323,7 +325,7 @@ function App() {
                 <div className="proposal-stay">
                   <h3>{selected.metadata.hotelName}</h3>
                   <p>
-                    {selected.metadata.checkIn ?? "TBD"} - {selected.metadata.checkOut ?? "TBD"}
+                    {formatStayDate(selected.metadata.checkIn)} - {formatStayDate(selected.metadata.checkOut)}
                     {proposalBookingSite(selected) ? ` / ${proposalBookingSite(selected)}` : ""}
                   </p>
                 </div>
@@ -374,7 +376,7 @@ function App() {
                   <Metadata label="予約番号" value={selected.metadata.reservationNumber} />
                   <Metadata label="宿泊者人数" value={guestCountLabel(selected)} />
                   <Metadata label="確認書URL" value={selected.metadata.reservationConfirmationUrl} />
-                  <Metadata label="宿泊日" value={`${selected.metadata.checkIn ?? "TBD"} - ${selected.metadata.checkOut ?? "TBD"}`} />
+                  <Metadata label="宿泊日" value={`${formatStayDate(selected.metadata.checkIn)} - ${formatStayDate(selected.metadata.checkOut)}`} />
                   <Metadata label="泊数" value={selected.metadata.nights?.toString()} />
                   <Metadata label="料金" value={priceLabel(selected)} />
                   <Metadata label="住所" value={selected.metadata.hotelAddress} />
@@ -513,6 +515,11 @@ function currentReservationPrice(item: PendingForward) {
 
 function proposalBookingSite(item: PendingForward) {
   return item.proposal?.bookingSite ?? item.metadata.bookingSite;
+}
+
+function formatStayDate(value?: string) {
+  if (!value) return "TBD";
+  return value.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? value;
 }
 
 createRoot(document.getElementById("root")!).render(

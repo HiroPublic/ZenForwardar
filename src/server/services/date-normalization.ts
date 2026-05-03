@@ -46,7 +46,7 @@ export function normalizeReservationDates(metadata: ReservationMetadata, receive
 function normalizeDate(value: string | undefined, fallbackYear: number): { iso: string; year: number } | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
-  const iso = trimmed.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  const iso = trimmed.match(/\b(\d{4})-(\d{2})-(\d{2})/);
   if (iso) return { iso: `${iso[1]}-${iso[2]}-${iso[3]}`, year: Number(iso[1]) };
 
   const monthDayYear = trimmed.match(/\b(?:mon|tue|wed|thu|fri|sat|sun)?[,]?\s*([A-Za-z]+)\.?\s+(\d{1,2})(?:[,]?\s+(\d{4}))?\b/i);

@@ -103,8 +103,10 @@ export async function createReservationRecord(
   if (!schema) return `mock-notion-${item.id}`;
   const availableProperties = schema.properties ?? {};
   const titlePropertyName = Object.entries(availableProperties).find(([, property]) => property.type === "title")?.[0] ?? "Name";
+  const checkIn = stayDate(metadata.checkIn);
+  const checkOut = stayDate(metadata.checkOut);
   const properties: NotionProperties = {
-    [titlePropertyName]: { title: [{ text: { content: `${metadata.hotelName} - ${metadata.checkIn ?? "TBD"}` } }] }
+    [titlePropertyName]: { title: [{ text: { content: `${metadata.hotelName} - ${checkIn ?? "TBD"}` } }] }
   };
   addIfAvailable(properties, availableProperties, "Hotel Name", { rich_text: [{ text: { content: metadata.hotelName } }] });
   addIfAvailable(properties, availableProperties, "Booking Site", { rich_text: [{ text: { content: metadata.bookingSite ?? "" } }] });
@@ -115,8 +117,8 @@ export async function createReservationRecord(
   addIfAvailable(properties, availableProperties, "Reservation Confirmation URL", { url: metadata.reservationConfirmationUrl ?? null });
   addIfAvailable(properties, availableProperties, "Status", { select: { name: metadata.status } });
   addIfAvailable(properties, availableProperties, "Email Type", { select: { name: metadata.emailType } });
-  addIfAvailable(properties, availableProperties, "Check-in", metadata.checkIn ? { date: { start: metadata.checkIn } } : { date: null });
-  addIfAvailable(properties, availableProperties, "Check-out", metadata.checkOut ? { date: { start: metadata.checkOut } } : { date: null });
+  addIfAvailable(properties, availableProperties, "Check-in", checkIn ? { date: { start: checkIn } } : { date: null });
+  addIfAvailable(properties, availableProperties, "Check-out", checkOut ? { date: { start: checkOut } } : { date: null });
   addIfAvailable(properties, availableProperties, "Nights", typeof metadata.nights === "number" ? { number: metadata.nights } : { number: null });
   addIfAvailable(properties, availableProperties, "Original Currency", { rich_text: [{ text: { content: metadata.originalCurrency ?? "" } }] });
   addIfAvailable(properties, availableProperties, "Original Amount", typeof metadata.originalAmount === "number" ? { number: metadata.originalAmount } : { number: null });
@@ -153,6 +155,8 @@ export async function createLowPriceProposalRecord(item: PendingForward, related
   const availableProperties = schema.properties ?? {};
   const titlePropertyName = getTitlePropertyName(availableProperties);
   const now = new Date().toISOString();
+  const checkIn = stayDate(metadata.checkIn);
+  const checkOut = stayDate(metadata.checkOut);
   const properties: NotionProperties = {
     [titlePropertyName]: { title: [{ text: { content: getProposalTitle(metadata) } }] }
   };
@@ -163,8 +167,8 @@ export async function createLowPriceProposalRecord(item: PendingForward, related
   addIfAvailable(properties, availableProperties, "Reservation Confirmation URL", { url: item.proposal.pageUrl });
   addIfAvailable(properties, availableProperties, "Status", { select: { name: "Price Alert" } });
   addIfAvailable(properties, availableProperties, "Email Type", { select: { name: "Low Price Proposal" } });
-  addIfAvailable(properties, availableProperties, "Check-in", metadata.checkIn ? { date: { start: metadata.checkIn } } : { date: null });
-  addIfAvailable(properties, availableProperties, "Check-out", metadata.checkOut ? { date: { start: metadata.checkOut } } : { date: null });
+  addIfAvailable(properties, availableProperties, "Check-in", checkIn ? { date: { start: checkIn } } : { date: null });
+  addIfAvailable(properties, availableProperties, "Check-out", checkOut ? { date: { start: checkOut } } : { date: null });
   addIfAvailable(properties, availableProperties, "Nights", typeof metadata.nights === "number" ? { number: metadata.nights } : { number: null });
   addIfAvailable(properties, availableProperties, "Original Currency", { rich_text: [{ text: { content: item.proposal.priceCurrency } }] });
   addIfAvailable(properties, availableProperties, "Original Amount", { number: item.proposal.priceAmount });
@@ -205,7 +209,7 @@ export async function findLatestProposalByNameAndCheckIn(metadata: ReservationMe
     filter: {
       and: [
         { property: titlePropertyName, title: { equals: getProposalTitle(metadata) } },
-        { property: "Check-in", date: { equals: metadata.checkIn } }
+        ...sameStayDateFilters("Check-in", metadata.checkIn)
       ]
     } as any,
     sorts: [{ property: "Created At", direction: "descending" }],
@@ -233,10 +237,10 @@ export async function hasCheckedHotelArrangementForCheckIn(checkIn?: string): Pr
     database_id: config.NOTION_HOTEL_RESERVATION_DATABASE_ID,
     filter: {
       and: [
-        { property: "Check-in", date: { equals: checkIn } },
+        ...sameStayDateFilters("Check-in", checkIn),
         { property: "Hotel Arrangement", checkbox: { equals: true } }
       ]
-    },
+    } as any,
     page_size: 1
   });
   return response.results.length > 0;
@@ -249,10 +253,10 @@ export async function findNonHotelSlashBookingSiteForCheckIn(checkIn?: string): 
     database_id: config.NOTION_HOTEL_RESERVATION_DATABASE_ID,
     filter: {
       and: [
-        { property: "Check-in", date: { equals: checkIn } },
+        ...sameStayDateFilters("Check-in", checkIn),
         { property: "Booking Site", rich_text: { is_not_empty: true } }
       ]
-    },
+    } as any,
     sorts: [{ property: "Created At", direction: "descending" }],
     page_size: 25
   });
@@ -291,10 +295,10 @@ export async function findRelatedReservation(metadata: ReservationMetadata): Pro
     : {
         and: [
           { property: "Hotel Name", rich_text: { equals: metadata.hotelName } },
-          ...(metadata.checkIn ? [{ property: "Check-in", date: { equals: metadata.checkIn } }] : []),
-          ...(metadata.checkOut ? [{ property: "Check-out", date: { equals: metadata.checkOut } }] : [])
+          ...(metadata.checkIn ? sameStayDateFilters("Check-in", metadata.checkIn) : []),
+          ...(metadata.checkOut ? sameStayDateFilters("Check-out", metadata.checkOut) : [])
         ]
-      };
+      } as any;
 
   const result = await notion.databases.query({
     database_id: config.NOTION_HOTEL_RESERVATION_DATABASE_ID,
@@ -430,7 +434,26 @@ function getTitlePropertyName(availableProperties: Record<string, any>) {
 }
 
 function getProposalTitle(metadata: ReservationMetadata) {
-  return `${metadata.hotelName} - ${metadata.checkIn ?? "TBD"}`;
+  return `${metadata.hotelName} - ${stayDate(metadata.checkIn) ?? "TBD"}`;
+}
+
+function stayDate(value?: string) {
+  return value?.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+}
+
+function sameStayDateFilters(propertyName: string, value?: string) {
+  const date = stayDate(value);
+  if (!date) return value ? [{ property: propertyName, date: { equals: value } }] : [];
+  return [
+    { property: propertyName, date: { on_or_after: date } },
+    { property: propertyName, date: { before: nextDate(date) } }
+  ];
+}
+
+function nextDate(date: string) {
+  const next = new Date(`${date}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString().slice(0, 10);
 }
 
 function readTitle(properties: Record<string, unknown>) {
