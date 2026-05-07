@@ -4,6 +4,10 @@ ZenForwarder は、日本語のホテル予約メールを Gmail から検出し
 
 予約メタデータ、処理履歴、HotelSlash の低価格提案は Notion データベースにも記録します。
 
+## 関連記事
+
+- NOTE: [【世界一周の裏技】ホテル予約を「自動」で安くする？　私の旅を支える最強ツール](https://note.com/dr830821/n/n5c55417158a8?app_launch=false)
+
 ## 主な機能
 
 - Gmail からホテル予約関連メールを検索
