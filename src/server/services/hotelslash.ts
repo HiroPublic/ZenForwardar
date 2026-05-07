@@ -63,10 +63,7 @@ export function getHotelSlashLoginStatus() {
 }
 
 export function parseTopHotelSlashOffer(text: string, pageUrl = ""): HotelSlashOffer {
-  const normalizedLines = text
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+  const normalizedLines = normalizeRenderedLines(text);
   const topOfferLines = sliceTopOfferLines(normalizedLines);
   const currentReservation = parseCurrentReservation(normalizedLines);
   const price = findPrice(topOfferLines) ?? findPrice(normalizedLines);
@@ -87,22 +84,63 @@ export function parseTopHotelSlashOffer(text: string, pageUrl = ""): HotelSlashO
   };
 }
 
+function normalizeRenderedLines(text: string) {
+  const collapsedPricePattern =
+    /((?:[A-Z]{3}|¥|\$|€|£|₺)\s*\d[\d,.]*)\s+(?=Save\b|PAY LATER\b|PAY DEPOSIT\b|Earn\b|Photos\b|Other deals\b|\d+\s+nights\b|$)/gi;
+  const normalizedText = text
+    .replace(/\r/g, "\n")
+    .replace(/(Here are the details of your current reservation\.)/gi, "\n$1\n")
+    .replace(/(Your HotelSlash Rates)/gi, "\n$1\n")
+    .replace(/(We found you a better price!)/gi, "\n$1\n")
+    .replace(/(Rebook your .*?lower rate:)/gi, "\n$1\n")
+    .replace(/(Other deals.*?:)/gi, "\n$1\n")
+    .replace(/(Photos,\s*Amenities,\s*Description|Photos Amenities Description)/gi, "\n$1\n")
+    .replace(/(Breakfast Included|Breakfast included|Fully Refundable|Non-Refundable|Non refundable|PAY DEPOSIT|PREPAID|Room Only)/gi, "\n$1\n")
+    .replace(/(Cancel before [A-Za-z]{3,9} \d{1,2}, \d{4}|Free cancellation until [A-Za-z]{3,9} \d{1,2}, \d{4})/gi, "\n$1\n")
+    .replace(/(\d+\s+adults?)\s+/gi, "$1\n")
+    .replace(collapsedPricePattern, "\n$1\n")
+    .replace(/(Save\s+(?:[A-Z]{3}|¥|\$|€|£|₺)?\s*\d[\d,.\s]*)/gi, "\n$1\n")
+    .replace(/(Earn\s+(?:[A-Z]{3}|¥|\$|€|£|₺)?\s*\d[\d,.\s]*SlashCash)/gi, "\n$1\n")
+    .replace(/(\d+\s+nights)\s+(PAY LATER|PAY DEPOSIT|PREPAID)/gi, "$1\n$2")
+    .replace(/\bat the\b/gi, "\nat the\n");
+
+  return normalizedText
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
 function sliceTopOfferLines(lines: string[]) {
-  const startMarkers = [/Your HotelSlash Rates/i, /Rebook your .*lower rate/i];
-  const startCandidates = startMarkers.map((pattern) => lines.findIndex((line) => pattern.test(line))).filter((index) => index >= 0);
-  const start = startCandidates.length ? Math.min(...startCandidates) : 0;
+  const hotelSlashRatesIndex = lines.findIndex((line) => /Your HotelSlash Rates/i.test(line));
+  const rebookIndex = lines.findIndex((line) => /Rebook your .*lower rate/i.test(line));
+  const betterPriceIndex = lines.findIndex((line) => /We found you a better price!/i.test(line));
+  const start = hotelSlashRatesIndex >= 0 ? hotelSlashRatesIndex : rebookIndex >= 0 ? rebookIndex : betterPriceIndex >= 0 ? betterPriceIndex : 0;
   const afterStart = lines.slice(start);
-  const end = afterStart.findIndex((line, index) => index > 0 && /Other deals|Results expire|Photos, Amenities, Description/i.test(line));
+  const end = afterStart.findIndex((line, index) => index > 0 && /Other deals|Results expire|Photos,\s*Amenities,\s*Description|Photos Amenities Description/i.test(line));
   return end >= 0 ? afterStart.slice(0, end) : afterStart.slice(0, 40);
 }
 
 function findPrice(lines: string[]) {
-  const currencyCode = "JPY|USD|EUR|GBP|AUD|CAD|TRY|AED|SAR|QAR|OMR|BHD|KWD|CHF|SEK|NOK|DKK|ISK|HUF|CZK|PLN|RON|BGN|GEL|INR|IDR|THB|VND|SGD|HKD|TWD|KRW|CNY|MYR|PHP|MXN|BRL|ARS|CLP|COP|ZAR|MAD|EGP";
+  const currencyCode = "JPY|USD|EUR|GBP|AUD|CAD|NZD|TRY|AED|SAR|QAR|OMR|BHD|KWD|CHF|SEK|NOK|DKK|ISK|HUF|CZK|PLN|RON|BGN|GEL|INR|IDR|THB|VND|SGD|HKD|TWD|KRW|CNY|MYR|PHP|MXN|BRL|ARS|CLP|COP|ZAR|MAD|EGP";
   const amountPattern = String.raw`\d{1,3}(?:[,.]\d{3})+(?:[,.]\d{2})?|\d+(?:[,.]\d{2})?`;
   const currencyPattern = String.raw`(?<![A-Z])(?:${currencyCode})(?![A-Z])|¥|\$|€|£|₺`;
-  for (const line of lines) {
-    if (/earn|slashcash/i.test(line) || /^\s*save\b/i.test(line)) continue;
-    const searchableLine = line.replace(/\bSave\b.*$/i, "");
+  const slashCashPattern = new RegExp(String.raw`earn\s+(?:${currencyPattern})?\s*${amountPattern}\s+slashcash`, "gi");
+  const priceOnlyPattern = new RegExp(
+    String.raw`^\s*(?:${currencyPattern}\s*${amountPattern}|${amountPattern}\s*${currencyPattern})\s*$`,
+    "i"
+  );
+
+  for (const [index, line] of lines.entries()) {
+    if (/^\s*save\b/i.test(line)) continue;
+    const previousLine = lines[index - 1] ?? "";
+    const nextLine = lines[index + 1] ?? "";
+    if (priceOnlyPattern.test(line) && (/^\s*save\b/i.test(previousLine) || /^\s*earn\b/i.test(previousLine) || /slashcash/i.test(nextLine))) {
+      continue;
+    }
+    const searchableLine = line
+      .replace(slashCashPattern, "")
+      .replace(/\b\d+(?:[,.]\d{2})?\s+slashcash\b/gi, "")
+      .replace(/\bSave\b.*$/i, "");
     const currencyFirst = searchableLine.match(new RegExp(String.raw`(?<currency>${currencyPattern})\s*(?<amount>${amountPattern})`, "i"));
     const amountFirst = searchableLine.match(new RegExp(String.raw`(?<amount>${amountPattern})\s*(?<currency>${currencyPattern})`, "i"));
     const match = currencyFirst ?? amountFirst;
@@ -166,6 +204,7 @@ function findRoomType(lines: string[]) {
 function findConditions(lines: string[]) {
   const conditions: string[] = [];
   for (const line of lines) {
+    if (/room only/i.test(line)) conditions.push("Room Only");
     if (/breakfast/i.test(line)) conditions.push(titleCaseCondition(line));
     if (/fully refundable|non[- ]?refundable|free cancellation|cancel/i.test(line)) conditions.push(titleCaseCondition(line));
     if (/pay deposit/i.test(line)) conditions.push("Pay Deposit");
