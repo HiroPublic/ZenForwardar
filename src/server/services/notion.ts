@@ -39,6 +39,7 @@ const requiredDatabaseProperties = {
   "Check-in": { date: {} },
   "Check-out": { date: {} },
   Nights: { number: { format: "number" } },
+  "Meal Plan": { rich_text: {} },
   "Original Currency": { rich_text: {} },
   "Original Amount": { number: { format: "number" } },
   "JPY Amount": { number: { format: "number" } },
@@ -120,6 +121,7 @@ export async function createReservationRecord(
   addIfAvailable(properties, availableProperties, "Check-in", checkIn ? { date: { start: checkIn } } : { date: null });
   addIfAvailable(properties, availableProperties, "Check-out", checkOut ? { date: { start: checkOut } } : { date: null });
   addIfAvailable(properties, availableProperties, "Nights", typeof metadata.nights === "number" ? { number: metadata.nights } : { number: null });
+  addIfAvailable(properties, availableProperties, "Meal Plan", { rich_text: [{ text: { content: metadata.mealPlan ?? "" } }] });
   addIfAvailable(properties, availableProperties, "Original Currency", { rich_text: [{ text: { content: metadata.originalCurrency ?? "" } }] });
   addIfAvailable(properties, availableProperties, "Original Amount", typeof metadata.originalAmount === "number" ? { number: metadata.originalAmount } : { number: null });
   addIfAvailable(properties, availableProperties, "JPY Amount", typeof metadata.jpyAmount === "number" ? { number: metadata.jpyAmount } : { number: null });

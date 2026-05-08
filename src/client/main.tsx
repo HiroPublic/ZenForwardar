@@ -378,6 +378,7 @@ function App() {
                   <Metadata label="確認書URL" value={selected.metadata.reservationConfirmationUrl} />
                   <Metadata label="宿泊日" value={`${formatStayDate(selected.metadata.checkIn)} - ${formatStayDate(selected.metadata.checkOut)}`} />
                   <Metadata label="泊数" value={selected.metadata.nights?.toString()} />
+                  <Metadata label="食事条件" value={selected.metadata.mealPlan} />
                   <Metadata label="料金" value={priceLabel(selected)} />
                   <Metadata label="住所" value={selected.metadata.hotelAddress} />
                   <Metadata label="電話" value={selected.metadata.hotelPhone} />

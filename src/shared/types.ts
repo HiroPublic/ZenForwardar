@@ -27,6 +27,7 @@ export interface ReservationMetadata {
   checkOut?: string;
   nights?: number;
   room?: string;
+  mealPlan?: string;
   originalCurrency?: string;
   originalAmount?: number;
   jpyAmount?: number;

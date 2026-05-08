@@ -25,6 +25,7 @@ export const reservationJsonSchema = {
     "checkOut",
     "nights",
     "room",
+    "mealPlan",
     "originalCurrency",
     "originalAmount",
     "cancellationPolicy",
@@ -48,6 +49,7 @@ export const reservationJsonSchema = {
     checkOut: { type: ["string", "null"] },
     nights: { type: ["number", "null"] },
     room: { type: ["string", "null"] },
+    mealPlan: { type: ["string", "null"] },
     originalCurrency: { type: ["string", "null"] },
     originalAmount: { type: ["number", "null"] },
     cancellationPolicy: { type: ["string", "null"] },
@@ -72,7 +74,7 @@ export async function extractReservationJson(email: SourceEmail): Promise<Reserv
       {
         role: "system",
         content:
-          "Extract only hotel reservation metadata from the email. Preserve the booking site, reservation/itinerary number, guest name, adult/child guest counts, and reservation confirmation URL for internal records. Remove unrelated personal information. Return strict JSON matching the requested keys."
+          "Extract only hotel reservation metadata from the email. Preserve the booking site, reservation/itinerary number, guest name, adult/child guest counts, reservation confirmation URL, and any meal-plan details such as breakfast included, dinner included, room only, half board, or full board. Remove unrelated personal information. Return strict JSON matching the requested keys."
       },
       {
         role: "user",
@@ -88,7 +90,7 @@ export async function extractReservationJson(email: SourceEmail): Promise<Reserv
     }
   });
 
-  return compactNulls(JSON.parse(response.output_text) as ReservationMetadata);
+  return applyEmailDerivedFallbacks(compactNulls(JSON.parse(response.output_text) as ReservationMetadata), email.body);
 }
 
 export async function generateForwardEmail(metadata: ReservationMetadata): Promise<{ subject: string; body: string }> {
@@ -130,6 +132,9 @@ ${metadata.nights ?? "Not provided"}
 
 Room:
 ${metadata.room ?? "Not provided"}
+
+Meal Plan:
+${metadata.mealPlan ?? "Not provided"}
 
 Guests:
 ${metadata.guestName ?? "Not provided"}
@@ -187,6 +192,7 @@ function mockExtract(email: SourceEmail): ReservationMetadata {
     checkOut: "2026-06-15",
     nights: 3,
     room: "Standard room",
+    mealPlan: inferMealPlanFromEmailBody(email.body),
     originalCurrency: "JPY",
     originalAmount: 42000,
     cancellationPolicy: "Free cancellation policy not provided in mock data.",
@@ -215,4 +221,36 @@ function findGuestCount(body: string, labels: string[]): number | undefined {
 
 function compactNulls(metadata: ReservationMetadata): ReservationMetadata {
   return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as unknown as ReservationMetadata;
+}
+
+function applyEmailDerivedFallbacks(metadata: ReservationMetadata, emailBody: string): ReservationMetadata {
+  if (metadata.mealPlan?.trim()) return metadata;
+  const mealPlan = inferMealPlanFromEmailBody(emailBody);
+  return mealPlan ? { ...metadata, mealPlan } : metadata;
+}
+
+export function inferMealPlanFromEmailBody(emailBody: string): string | undefined {
+  const candidates = emailBody
+    .replace(/\r/g, "\n")
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const matches = candidates.filter(isMealPlanLine).map(normalizeMealPlanLine);
+  return matches.length ? [...new Set(matches)].join(", ") : undefined;
+}
+
+function isMealPlanLine(line: string) {
+  const normalized = line.toLowerCase();
+  if (!/(breakfast|dinner|lunch|meal plan|half board|full board|all inclusive|room only|朝食|夕食|昼食|食事)/i.test(line)) {
+    return false;
+  }
+  return !/(cancellation|cancel|check-?in|check-?out|traveler|guest name|reservation number|confirmation number|total price|tax|fee)/i.test(normalized);
+}
+
+function normalizeMealPlanLine(line: string) {
+  const trimmed = line.replace(/^[•*\-\u2022]\s*/, "").trim();
+  if (/^breakfast included$/i.test(trimmed)) return "Breakfast Included";
+  if (/^room only$/i.test(trimmed)) return "Room Only";
+  return trimmed;
 }
