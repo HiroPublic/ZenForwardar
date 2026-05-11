@@ -51,6 +51,13 @@ export interface LowPriceProposal {
   bookingSite?: string;
 }
 
+export interface UnavailableLowPriceProposal {
+  requestedUrl: string;
+  finalUrl: string;
+  pageTitle?: string;
+  message: string;
+}
+
 export interface CurrentReservationInfo {
   priceCurrency?: string;
   priceAmount?: number;
@@ -81,7 +88,7 @@ export interface AuditEvent {
 
 export interface PendingForward {
   id: string;
-  kind?: "forward" | "lowPriceProposal";
+  kind?: "forward" | "lowPriceProposal" | "unavailableLowPriceProposal";
   gmailMessageId: string;
   gmailUrl: string;
   from: string;
@@ -92,6 +99,7 @@ export interface PendingForward {
   generatedBody: string;
   internalJson: ReservationMetadata;
   proposal?: LowPriceProposal;
+  unavailableProposal?: UnavailableLowPriceProposal;
   state: ProcessingState;
   auditLog: AuditEvent[];
 }

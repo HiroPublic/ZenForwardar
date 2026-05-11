@@ -1,10 +1,10 @@
 import type { ForwardResult, NotionOnlyResult, PendingForward } from "../shared/types";
-import { extractReservationJson, generateForwardEmail, type SourceEmail } from "./services/ai";
+import { extractReservationJson, generateForwardEmail, NonHotelReservationEmailError, type SourceEmail } from "./services/ai";
 import { audit } from "./services/audit";
 import { normalizeReservationDates } from "./services/date-normalization";
 import { convertToJpy } from "./services/exchange";
 import { ensureSendAsAlias, extractLowerRateButtonUrl, fetchCandidateEmails, isLowerRateEmail, markProcessed, sendForward } from "./services/gmail";
-import { extractTopHotelSlashOffer } from "./services/hotelslash";
+import { extractTopHotelSlashOffer, isHotelSlashRatesUnavailableError } from "./services/hotelslash";
 import { extractReservationConfirmationUrl } from "./services/links";
 import {
   createLowPriceProposalRecord,
@@ -25,6 +25,7 @@ const processedReservationKeys = new Set<string>();
 
 export async function syncReservations(tokens?: unknown): Promise<PendingForward[]> {
   const emails = await fetchCandidateEmails(tokens);
+  refreshPendingForwardCandidates(emails);
   const results: PendingForward[] = [];
 
   for (const email of emails) {
@@ -32,48 +33,61 @@ export async function syncReservations(tokens?: unknown): Promise<PendingForward
     if (excludedMessageIds.has(email.id)) continue;
     if ([...pending.values()].some((item) => item.gmailMessageId === email.id)) continue;
     const log = [audit("gmail.fetch", "ok", "Fetched candidate Gmail message", { messageId: email.id })];
-    if (isLowerRateEmail(email)) {
-      const lowPriceItem = await buildLowPriceProposal(email, log);
-      pending.set(lowPriceItem.id, lowPriceItem);
-      results.push(lowPriceItem);
-      continue;
+    try {
+      if (isLowerRateEmail(email)) {
+        const lowPriceItem = await buildLowPriceProposal(email, log);
+        pending.set(lowPriceItem.id, lowPriceItem);
+        results.push(lowPriceItem);
+        continue;
+      }
+      const metadata = normalizeReservationDates(await extractReservationJson(email), email.receivedAt);
+      metadata.reservationConfirmationUrl ??= extractReservationConfirmationUrl(email.body);
+      log.push(audit("ai.extract", "ok", "Extracted internal reservation JSON"));
+      const reservationKey = getReservationKeyFromMetadata(metadata);
+      if (reservationKey && (processedReservationKeys.has(reservationKey) || excludedReservationKeys.has(reservationKey))) continue;
+      if (reservationKey && [...pending.values()].some((item) => item.kind !== "lowPriceProposal" && item.kind !== "unavailableLowPriceProposal" && getReservationKeyFromMetadata(item.metadata) === reservationKey)) continue;
+      const quote = await convertToJpy(metadata.originalCurrency, metadata.originalAmount);
+      if (quote) {
+        metadata.exchangeRate = quote.rate;
+        metadata.exchangeRateDate = quote.date;
+        metadata.jpyAmount = quote.jpyAmount;
+        log.push(audit("exchange.convert", "ok", "Converted original amount to JPY"));
+      }
+      const relatedReservationId = await findRelatedReservation(metadata);
+      if (relatedReservationId) {
+        metadata.relatedReservationId = relatedReservationId;
+        log.push(audit("notion.relate", "ok", "Matched HotelSlash price alert to an existing reservation", { relatedReservationId }));
+      }
+      const generated = await generateForwardEmail(metadata);
+      log.push(audit("ai.generate", "ok", "Generated redacted English forward body"));
+      const item: PendingForward = {
+        id: crypto.randomUUID(),
+        gmailMessageId: email.id,
+        gmailUrl: `https://mail.google.com/mail/u/0/#inbox/${email.id}`,
+        from: email.from,
+        receivedAt: email.receivedAt,
+        subject: email.subject,
+        metadata,
+        generatedSubject: generated.subject,
+        generatedBody: generated.body,
+        internalJson: metadata,
+        state: "pending",
+        auditLog: log
+      };
+      pending.set(item.id, item);
+      results.push(item);
+    } catch (error) {
+      if (error instanceof NonHotelReservationEmailError) {
+        continue;
+      }
+      if (isLowerRateEmail(email) && isHotelSlashRatesUnavailableError(error)) {
+        const unavailableItem = await buildUnavailableLowPriceProposal(email, log, error);
+        pending.set(unavailableItem.id, unavailableItem);
+        results.push(unavailableItem);
+        continue;
+      }
+      throw error;
     }
-    const metadata = normalizeReservationDates(await extractReservationJson(email), email.receivedAt);
-    metadata.reservationConfirmationUrl ??= extractReservationConfirmationUrl(email.body);
-    log.push(audit("ai.extract", "ok", "Extracted internal reservation JSON"));
-    const reservationKey = getReservationKeyFromMetadata(metadata);
-    if (reservationKey && (processedReservationKeys.has(reservationKey) || excludedReservationKeys.has(reservationKey))) continue;
-    if (reservationKey && [...pending.values()].some((item) => getReservationKeyFromMetadata(item.metadata) === reservationKey)) continue;
-    const quote = await convertToJpy(metadata.originalCurrency, metadata.originalAmount);
-    if (quote) {
-      metadata.exchangeRate = quote.rate;
-      metadata.exchangeRateDate = quote.date;
-      metadata.jpyAmount = quote.jpyAmount;
-      log.push(audit("exchange.convert", "ok", "Converted original amount to JPY"));
-    }
-    const relatedReservationId = await findRelatedReservation(metadata);
-    if (relatedReservationId) {
-      metadata.relatedReservationId = relatedReservationId;
-      log.push(audit("notion.relate", "ok", "Matched HotelSlash price alert to an existing reservation", { relatedReservationId }));
-    }
-    const generated = await generateForwardEmail(metadata);
-    log.push(audit("ai.generate", "ok", "Generated redacted English forward body"));
-    const item: PendingForward = {
-      id: crypto.randomUUID(),
-      gmailMessageId: email.id,
-      gmailUrl: `https://mail.google.com/mail/u/0/#inbox/${email.id}`,
-      from: email.from,
-      receivedAt: email.receivedAt,
-      subject: email.subject,
-      metadata,
-      generatedSubject: generated.subject,
-      generatedBody: generated.body,
-      internalJson: metadata,
-      state: "pending",
-      auditLog: log
-    };
-    pending.set(item.id, item);
-    results.push(item);
   }
 
   return [...pending.values()].filter((item) => item.state === "pending");
@@ -124,7 +138,7 @@ export async function approveForward(id: string, editedBody: string, tokens?: un
 export async function registerForwardInNotionOnly(id: string, tokens?: unknown): Promise<NotionOnlyResult> {
   const item = pending.get(id);
   if (!item) throw new Error("Pending forward was not found");
-  if (item.kind === "lowPriceProposal") throw new Error("Low price proposals cannot be registered with this action.");
+  if (item.kind === "lowPriceProposal" || item.kind === "unavailableLowPriceProposal") throw new Error("Low price proposals cannot be registered with this action.");
   item.auditLog.push(audit("approval", "ok", "User registered generated body in Notion without forwarding"));
   await ensureReservationDatabaseSchema();
   item.auditLog.push(audit("notion.schema", "ok", "Verified Notion reservation history database schema"));
@@ -143,6 +157,24 @@ export async function registerForwardInNotionOnly(id: string, tokens?: unknown):
   removePendingByMessageId(item.gmailMessageId);
   if (reservationKey) removePendingByReservationKey(reservationKey);
   return { item, notionPageId, hotelArrangement };
+}
+
+export async function acknowledgeUnavailableLowPriceProposal(
+  id: string,
+  tokens?: unknown
+): Promise<{ item: PendingForward }> {
+  const item = pending.get(id);
+  if (!item) throw new Error("Pending low price proposal notice was not found");
+  if (item.kind !== "unavailableLowPriceProposal" || !item.unavailableProposal) {
+    throw new Error("Selected item is not an unavailable low price proposal.");
+  }
+  item.auditLog.push(audit("approval", "ok", "User acknowledged unavailable HotelSlash proposal"));
+  await markProcessed(tokens, item.gmailMessageId);
+  item.auditLog.push(audit("gmail.label", "ok", "Applied processed Gmail label"));
+  processedMessageIds.add(item.gmailMessageId);
+  item.state = "processed";
+  removePendingByMessageId(item.gmailMessageId);
+  return { item };
 }
 
 export async function decideLowPriceProposal(
@@ -190,14 +222,24 @@ function dedupePending() {
       pending.delete(id);
       continue;
     }
-    if (reservationKey && seenReservationKeys.has(reservationKey)) {
+    if (reservationKey && item.kind !== "lowPriceProposal" && item.kind !== "unavailableLowPriceProposal" && seenReservationKeys.has(reservationKey)) {
       pending.delete(id);
       continue;
     }
     seen.add(item.gmailMessageId);
-    if (reservationKey) seenReservationKeys.add(reservationKey);
+    if (reservationKey && item.kind !== "lowPriceProposal" && item.kind !== "unavailableLowPriceProposal") seenReservationKeys.add(reservationKey);
   }
   return [...pending.values()].filter((item) => item.state === "pending");
+}
+
+function refreshPendingForwardCandidates(emails: SourceEmail[]) {
+  const currentMessageIds = new Set(emails.map((email) => email.id));
+  for (const [id, item] of pending.entries()) {
+    if (item.kind === "lowPriceProposal" || item.kind === "unavailableLowPriceProposal") continue;
+    if (currentMessageIds.has(item.gmailMessageId)) {
+      pending.delete(id);
+    }
+  }
 }
 
 function removePendingByMessageId(messageId: string) {
@@ -227,16 +269,7 @@ function getReservationKeyFromMetadata(metadata: PendingForward["metadata"]) {
 }
 
 async function buildLowPriceProposal(email: SourceEmail, log: PendingForward["auditLog"]) {
-  const metadata = normalizeReservationDates(await extractReservationJson(email), email.receivedAt);
-  metadata.bookingSite = "HotelSlash";
-  metadata.status = "Price Alert";
-  metadata.emailType = "Low Price Proposal";
-  metadata.reservationConfirmationUrl ??= extractReservationConfirmationUrl(email.body);
-  log.push(audit("ai.extract", "ok", "Extracted HotelSlash low price email metadata"));
-
-  const ratesUrl = extractLowerRateButtonUrl(email.body);
-  if (!ratesUrl) throw new Error("HotelSlash rates button URL could not be found in the email body.");
-  log.push(audit("hotelslash.link", "ok", "Extracted HotelSlash rates button URL"));
+  const { metadata, ratesUrl } = await extractLowPriceProposalContext(email, log);
 
   const offer = await extractTopHotelSlashOffer(ratesUrl);
   log.push(audit("hotelslash.render", "ok", "Rendered HotelSlash rates page and extracted top offer"));
@@ -286,6 +319,56 @@ async function buildLowPriceProposal(email: SourceEmail, log: PendingForward["au
   item.proposal = { ...item.proposal!, notionPageId };
   item.auditLog.push(audit("notion.create", "ok", "Created Low Price Proposal record", { notionPageId }));
   return item;
+}
+
+async function buildUnavailableLowPriceProposal(
+  email: SourceEmail,
+  log: PendingForward["auditLog"],
+  error: Error
+) {
+  const { metadata, ratesUrl } = await extractLowPriceProposalContext(email, log);
+  log.push(
+    audit("hotelslash.render", "ok", "Rendered HotelSlash rates page and detected that the offer is no longer available", {
+      requestedUrl: ratesUrl
+    })
+  );
+  log.push(audit("hotelslash.unavailable", "info", error.message));
+  const item: PendingForward = {
+    id: crypto.randomUUID(),
+    kind: "unavailableLowPriceProposal",
+    gmailMessageId: email.id,
+    gmailUrl: `https://mail.google.com/mail/u/0/#inbox/${email.id}`,
+    from: email.from,
+    receivedAt: email.receivedAt,
+    subject: email.subject,
+    metadata,
+    generatedSubject: `失効した Low Price Proposal - ${metadata.hotelName}`,
+    generatedBody: error.message,
+    internalJson: metadata,
+    unavailableProposal: {
+      requestedUrl: ratesUrl,
+      finalUrl: "finalUrl" in error && typeof error.finalUrl === "string" ? error.finalUrl : ratesUrl,
+      pageTitle: "pageTitle" in error && typeof error.pageTitle === "string" ? error.pageTitle : undefined,
+      message: error.message
+    },
+    state: "pending",
+    auditLog: log
+  };
+  return item;
+}
+
+async function extractLowPriceProposalContext(email: SourceEmail, log: PendingForward["auditLog"]) {
+  const metadata = normalizeReservationDates(await extractReservationJson(email), email.receivedAt);
+  metadata.bookingSite = "HotelSlash";
+  metadata.status = "Price Alert";
+  metadata.emailType = "Low Price Proposal";
+  metadata.reservationConfirmationUrl ??= extractReservationConfirmationUrl(email.body);
+  log.push(audit("ai.extract", "ok", "Extracted HotelSlash low price email metadata"));
+
+  const ratesUrl = extractLowerRateButtonUrl(email.body);
+  if (!ratesUrl) throw new Error("HotelSlash rates button URL could not be found in the email body.");
+  log.push(audit("hotelslash.link", "ok", "Extracted HotelSlash rates button URL"));
+  return { metadata, ratesUrl };
 }
 
 function cleanKeyPart(value?: string) {

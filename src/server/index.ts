@@ -7,7 +7,15 @@ import { z } from "zod";
 import { config, isLiveMode } from "./config";
 import { buildOAuthClient, getAuthUrl, hasGmailTokens, isGmailConfigured } from "./services/gmail";
 import { finishHotelSlashLoginSession, getHotelSlashLoginStatus, startHotelSlashLoginSession } from "./services/hotelslash";
-import { approveForward, decideLowPriceProposal, dismissForwardAndReload, listPending, registerForwardInNotionOnly, syncReservations } from "./workflow";
+import {
+  acknowledgeUnavailableLowPriceProposal,
+  approveForward,
+  decideLowPriceProposal,
+  dismissForwardAndReload,
+  listPending,
+  registerForwardInNotionOnly,
+  syncReservations
+} from "./workflow";
 import { applyBookingSiteBackfill, applyConfirmationUrlBackfill, planBookingSiteBackfill, planConfirmationUrlBackfill } from "./services/backfill";
 import { archiveRecordedReservationEmails } from "./services/archive";
 
@@ -133,6 +141,15 @@ app.post("/api/proposal/:id/decision", async (req, res, next) => {
   try {
     const body = z.object({ decision: z.enum(["accepted", "unaccepted"]) }).parse(req.body);
     const result = await decideLowPriceProposal(req.params.id, body.decision, req.session?.tokens);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/proposal/:id/acknowledge-unavailable", async (req, res, next) => {
+  try {
+    const result = await acknowledgeUnavailableLowPriceProposal(req.params.id, req.session?.tokens);
     res.json(result);
   } catch (error) {
     next(error);

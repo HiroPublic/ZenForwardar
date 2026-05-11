@@ -185,6 +185,27 @@ function App() {
     }
   }
 
+  async function acknowledgeUnavailableProposal() {
+    if (!selected) return;
+    setApiState("loading");
+    setMessage("失効したHotelSlash提案を確認済みにして、GmailのProcessedへ移動しています。");
+    try {
+      const response = await fetch(`/api/proposal/${selected.id}/acknowledge-unavailable`, {
+        method: "POST"
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "失効した提案の確認処理に失敗しました。");
+      const remaining = items.filter((item) => item.id !== selected.id);
+      setItems(remaining);
+      setSelectedId(remaining[0]?.id);
+      setMessage("失効した提案を確認済みにし、GmailのProcessed移動が完了しました。");
+      setApiState("idle");
+    } catch (error) {
+      setApiState("error");
+      setMessage(error instanceof Error ? error.message : "失効した提案の確認処理に失敗しました。");
+    }
+  }
+
   async function dismissAndReload() {
     if (!selected) return;
     setApiState("loading");
@@ -300,7 +321,7 @@ function App() {
                   {selected.from} / {new Date(selected.receivedAt).toLocaleString("ja-JP")}
                 </p>
               </div>
-              {selected.kind === "lowPriceProposal" ? null : (
+              {selected.kind === "lowPriceProposal" || selected.kind === "unavailableLowPriceProposal" ? null : (
                 <div className="review-actions">
                   <button className="secondary-button" onClick={dismissAndReload} disabled={apiState === "loading"}>
                     {apiState === "loading" ? <Loader2 className="spin" size={18} /> : <XCircle size={18} />}
@@ -364,6 +385,32 @@ function App() {
                   <button className="secondary-button" onClick={() => decideProposal("unaccepted")} disabled={apiState === "loading"}>
                     {apiState === "loading" ? <Loader2 className="spin" size={18} /> : <ThumbsDown size={18} />}
                     不採用
+                  </button>
+                </div>
+              </section>
+            ) : selected.kind === "unavailableLowPriceProposal" && selected.unavailableProposal ? (
+              <section className="proposal-panel">
+                <div className="proposal-stay">
+                  <h3>{selected.metadata.hotelName}</h3>
+                  <p>
+                    {formatStayDate(selected.metadata.checkIn)} - {formatStayDate(selected.metadata.checkOut)}
+                    {selected.metadata.bookingSite ? ` / ${selected.metadata.bookingSite}` : ""}
+                  </p>
+                </div>
+                <div className="proposal-column">
+                  <h4>HotelSlash提案は失効しました</h4>
+                  <p className="proposal-empty">
+                    HotelSlash側で「見つけた料金はもう利用できない」と返されています。確認後は、このメールを転送・Notion登録せずに
+                    `ZenForwarder/Processed` へ移動します。
+                  </p>
+                  <CompactFact label="タイトル" value={selected.unavailableProposal.pageTitle} />
+                  <CompactFact label="Requested URL" value={selected.unavailableProposal.requestedUrl} />
+                  <CompactFact label="Final URL" value={selected.unavailableProposal.finalUrl} />
+                </div>
+                <div className="proposal-actions">
+                  <button className="approve-button" onClick={acknowledgeUnavailableProposal} disabled={apiState === "loading"}>
+                    {apiState === "loading" ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                    確認してProcessedへ移動
                   </button>
                 </div>
               </section>

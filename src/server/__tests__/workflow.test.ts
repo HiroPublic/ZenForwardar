@@ -11,27 +11,57 @@ let emails: SourceEmail[] = [
   }
 ];
 let lowerRate = false;
+let unavailableRateUrls = new Set<string>();
+
+class MockHotelSlashRatesUnavailableError extends Error {
+  finalUrl: string;
+  pageTitle?: string;
+
+  constructor(message: string, finalUrl: string, pageTitle?: string) {
+    super(message);
+    this.name = "HotelSlashRatesUnavailableError";
+    this.finalUrl = finalUrl;
+    this.pageTitle = pageTitle;
+  }
+}
 
 vi.mock("../services/gmail", () => ({
   fetchCandidateEmails: vi.fn(async () => emails),
   ensureSendAsAlias: vi.fn(),
-  extractLowerRateButtonUrl: vi.fn(() => "https://hotelslash.example/rates"),
+  extractLowerRateButtonUrl: vi.fn((body: string) => body.match(/https?:\/\/[^\s"'<>]+/)?.[0] ?? "https://hotelslash.example/rates"),
   isLowerRateEmail: vi.fn(() => lowerRate),
   markProcessed: vi.fn(),
   sendForward: vi.fn()
 }));
 
 vi.mock("../services/hotelslash", () => ({
-  extractTopHotelSlashOffer: vi.fn(async () => ({
-    pageUrl: "https://hotelslash.example/rates",
-    priceCurrency: "JPY",
-    priceAmount: 12000,
-    roomType: "Standard Room",
-    conditions: ["Refundable"]
-  }))
+  HotelSlashRatesUnavailableError: MockHotelSlashRatesUnavailableError,
+  isHotelSlashRatesUnavailableError: vi.fn((error: unknown) => error instanceof MockHotelSlashRatesUnavailableError),
+  extractTopHotelSlashOffer: vi.fn(async (url: string) => {
+    if (unavailableRateUrls.has(url)) {
+      throw new MockHotelSlashRatesUnavailableError(
+        "HotelSlash says the lower rates are no longer available.",
+        "https://www.hotelslash.com/Offer/RatesNotFound?identifier=sample",
+        "Rate Not Found | HotelSlash | Hotel Price Tracker"
+      );
+    }
+    return {
+      pageUrl: "https://hotelslash.example/rates",
+      priceCurrency: "JPY",
+      priceAmount: 12000,
+      roomType: "Standard Room",
+      conditions: ["Refundable"]
+    };
+  })
 }));
 
 vi.mock("../services/ai", () => ({
+  NonHotelReservationEmailError: class NonHotelReservationEmailError extends Error {
+    constructor(message = "Email does not appear to be a hotel reservation.") {
+      super(message);
+      this.name = "NonHotelReservationEmailError";
+    }
+  },
   extractReservationJson: vi.fn(async () => ({
     hotelName: "Sample Hotel",
     reservationNumber: "SAMPLE-RESERVATION-1",
@@ -73,6 +103,7 @@ describe("workflow dismiss and reload", () => {
       }
     ];
     lowerRate = false;
+    unavailableRateUrls = new Set<string>();
     vi.clearAllMocks();
     vi.resetModules();
   });
@@ -157,6 +188,60 @@ describe("workflow dismiss and reload", () => {
     expect(item.proposal?.bookingSite).toBe("Expedia.com");
   });
 
+  it("keeps an unavailable HotelSlash offer as an acknowledgment item and continues sync", async () => {
+    emails = [
+      {
+        id: "hotelslash-unavailable",
+        from: "alerts@hotelslash.com",
+        subject: "Lower Rate Found on Your Trip",
+        receivedAt: "2026-05-12T00:00:00.000Z",
+        body: "CLICK HERE TO SEE YOUR RATES https://hotelslash.example/unavailable"
+      },
+      {
+        id: "hotelslash-available",
+        from: "alerts@hotelslash.com",
+        subject: "Lower Rate Found on Your Trip",
+        receivedAt: "2026-05-12T01:00:00.000Z",
+        body: "CLICK HERE TO SEE YOUR RATES https://hotelslash.example/available"
+      }
+    ];
+    lowerRate = true;
+    unavailableRateUrls = new Set(["https://hotelslash.example/unavailable"]);
+    const workflow = await import("../workflow");
+
+    const firstPass = await workflow.syncReservations();
+
+    expect(firstPass).toHaveLength(2);
+    expect(firstPass.some((item) => item.kind === "unavailableLowPriceProposal")).toBe(true);
+    expect(firstPass.some((item) => item.gmailMessageId === "hotelslash-available" && item.kind === "lowPriceProposal")).toBe(true);
+  });
+
+  it("marks unavailable HotelSlash offers as processed without forwarding or Notion updates", async () => {
+    emails = [
+      {
+        id: "hotelslash-unavailable",
+        from: "alerts@hotelslash.com",
+        subject: "Lower Rate Found on Your Trip",
+        receivedAt: "2026-05-12T00:00:00.000Z",
+        body: "CLICK HERE TO SEE YOUR RATES https://hotelslash.example/unavailable"
+      }
+    ];
+    lowerRate = true;
+    unavailableRateUrls = new Set(["https://hotelslash.example/unavailable"]);
+    const gmail = await import("../services/gmail");
+    const notion = await import("../services/notion");
+    const workflow = await import("../workflow");
+
+    const [item] = await workflow.syncReservations();
+    const result = await workflow.acknowledgeUnavailableLowPriceProposal(item.id);
+
+    expect(result.item.kind).toBe("unavailableLowPriceProposal");
+    expect(gmail.markProcessed).toHaveBeenCalledWith(undefined, "hotelslash-unavailable");
+    expect(notion.createLowPriceProposalRecord).not.toHaveBeenCalled();
+    expect(gmail.sendForward).not.toHaveBeenCalled();
+    expect(workflow.listPending()).toEqual([]);
+  });
+
   it("collapses multiple Gmail messages for the same reservation into one app candidate", async () => {
     emails = [
       { ...emails[0], id: "sample-message-1" },
@@ -167,5 +252,98 @@ describe("workflow dismiss and reload", () => {
     const pending = await workflow.syncReservations();
 
     expect(pending).toHaveLength(1);
+  });
+
+  it("skips transport bookings that are not hotel reservations", async () => {
+    emails = [
+      {
+        id: "taxi-message-1",
+        from: "noreply@taxidatum.com",
+        subject: "Booking confirmation: TD265565",
+        receivedAt: "2026-05-12T00:00:00.000Z",
+        body: "Pick up address: Ollantaytambo Train Station\nDrop off address: Hilton Garden Inn Cusco\nVehicle type: Sedan"
+      }
+    ];
+    const ai = await import("../services/ai");
+    vi.mocked(ai.extractReservationJson).mockRejectedValueOnce(new ai.NonHotelReservationEmailError());
+    const workflow = await import("../workflow");
+
+    expect(await workflow.syncReservations()).toEqual([]);
+  });
+
+  it("skips restaurant, church, and museum bookings that are not hotel reservations", async () => {
+    emails = [
+      {
+        id: "restaurant-message-1",
+        from: "bookings@restaurant.example",
+        subject: "Reservation confirmed for dinner",
+        receivedAt: "2026-05-12T00:00:00.000Z",
+        body: "Restaurant reservation\nTable for 2\nDining time: 19:30"
+      },
+      {
+        id: "church-message-1",
+        from: "tickets@church.example",
+        subject: "Cathedral visit reservation confirmed",
+        receivedAt: "2026-05-12T01:00:00.000Z",
+        body: "Basilica reservation\nCathedral entry at 10:00\nVisitors: 2"
+      },
+      {
+        id: "museum-message-1",
+        from: "tickets@museum.example",
+        subject: "Museum ticket reservation confirmed",
+        receivedAt: "2026-05-12T02:00:00.000Z",
+        body: "Museum reservation\nExhibition entry ticket\nAudio guide included"
+      }
+    ];
+    const ai = await import("../services/ai");
+    vi.mocked(ai.extractReservationJson)
+      .mockRejectedValueOnce(new ai.NonHotelReservationEmailError("restaurant"))
+      .mockRejectedValueOnce(new ai.NonHotelReservationEmailError("church"))
+      .mockRejectedValueOnce(new ai.NonHotelReservationEmailError("museum"));
+    const workflow = await import("../workflow");
+
+    expect(await workflow.syncReservations()).toEqual([]);
+  });
+
+  it("rebuilds existing forward candidates on sync so newly excluded emails disappear", async () => {
+    emails = [
+      {
+        id: "taxi-message-existing",
+        from: "noreply@taxidatum.com",
+        subject: "Booking confirmation: TD265565",
+        receivedAt: "2026-05-12T00:00:00.000Z",
+        body: "Reservation body"
+      }
+    ];
+    const ai = await import("../services/ai");
+    const workflow = await import("../workflow");
+
+    vi.mocked(ai.extractReservationJson).mockResolvedValueOnce({
+      hotelName: "",
+      hotelAddress: undefined,
+      hotelPhone: undefined,
+      bookingSite: "taxidatum.com",
+      reservationNumber: "TD265565",
+      guestName: "Mr. Hiro Kishimoto",
+      adultCount: 2,
+      childCount: undefined,
+      reservationConfirmationUrl: "https://taxidatum.com",
+      status: "Confirmed",
+      emailType: "Reservation Confirmation",
+      checkIn: "2026-07-21",
+      checkOut: undefined,
+      nights: undefined,
+      room: undefined,
+      mealPlan: undefined,
+      originalCurrency: "USD",
+      originalAmount: 35,
+      cancellationPolicy: undefined,
+      notes: undefined
+    });
+    const [first] = await workflow.syncReservations();
+    expect(first).toBeDefined();
+
+    vi.mocked(ai.extractReservationJson).mockRejectedValueOnce(new ai.NonHotelReservationEmailError("transport"));
+    expect(await workflow.syncReservations()).toEqual([]);
   });
 });

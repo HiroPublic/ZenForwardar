@@ -65,10 +65,54 @@ export interface SourceEmail {
   body: string;
 }
 
-export async function extractReservationJson(email: SourceEmail): Promise<ReservationMetadata> {
-  if (!client) return mockExtract(email);
+export class NonHotelReservationEmailError extends Error {
+  constructor(message = "Email does not appear to be a hotel reservation.") {
+    super(message);
+    this.name = "NonHotelReservationEmailError";
+  }
+}
 
-  const response = await client.responses.create({
+export async function extractReservationJson(email: SourceEmail): Promise<ReservationMetadata> {
+  assertSupportedHotelReservationCandidate(email);
+  const metadata = client
+    ? await extractReservationJsonWithAi(email)
+    : mockExtract(email);
+  assertLooksLikeHotelReservation(email, metadata);
+  return metadata;
+}
+
+export function assertSupportedHotelReservationCandidate(email: SourceEmail): void {
+  const normalized = `${email.from}\n${email.subject}\n${email.body}`.replace(/\r/g, "\n").toLowerCase();
+  const hasClearHotelStaySignals = countHotelStayTextSignals(normalized) >= 2;
+
+  if (!hasClearHotelStaySignals && looksLikeTransportBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like a transport or transfer booking, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeRestaurantBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like a restaurant reservation, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeReligiousSiteBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like a church reservation or event, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeRuinsBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like an archaeological site or ruins booking, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeMuseumBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like a museum or gallery booking, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeLandmarkOrAttractionBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like an attraction or timed-entry booking, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikeTourOrActivityBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like a tour, activity, or class booking, not a hotel reservation.");
+  }
+  if (!hasClearHotelStaySignals && looksLikePerformanceOrSportsBooking(normalized)) {
+    throw new NonHotelReservationEmailError("Email looks like an event or performance booking, not a hotel reservation.");
+  }
+}
+
+async function extractReservationJsonWithAi(email: SourceEmail): Promise<ReservationMetadata> {
+  const response = await client!.responses.create({
     model: config.OPENAI_MODEL,
     input: [
       {
@@ -200,6 +244,49 @@ function mockExtract(email: SourceEmail): ReservationMetadata {
   };
 }
 
+export function assertLooksLikeHotelReservation(email: SourceEmail, metadata: ReservationMetadata): void {
+  const text = `${email.subject}\n${email.body}`.replace(/\r/g, "\n");
+  const normalized = text.toLowerCase();
+  const transportSignalCount = countTransportSignals(normalized);
+  const restaurantSignalCount = countRestaurantSignals(normalized);
+  const churchSignalCount = countReligiousSiteSignals(normalized);
+  const ruinsSignalCount = countRuinsSignals(normalized);
+  const museumSignalCount = countMuseumSignals(normalized);
+  const staySignalCount = countStaySignals(normalized, metadata);
+  const lodgingSignalCount = countLodgingSignals(normalized, metadata);
+  const hasHotelOnlyDestinationSignal =
+    /\bdrop[\s-]?off address\b/i.test(normalized) &&
+    /\b(hotel|inn|resort|hostel|ryokan|apartment|suites?)\b/i.test(metadata.hotelName ?? "");
+  const hasExplicitRestaurantReservationSignal =
+    /\btable\b/i.test(normalized) || /\bdining time\b/i.test(normalized) || /\btasting\b/i.test(normalized);
+
+  if (transportSignalCount >= 2 && (staySignalCount === 0 || hasHotelOnlyDestinationSignal)) {
+    throw new NonHotelReservationEmailError(
+      "Email looks like a transport or transfer booking, not a hotel reservation."
+    );
+  }
+  if (restaurantSignalCount >= 2 && staySignalCount < 3 && (lodgingSignalCount < 2 || hasExplicitRestaurantReservationSignal)) {
+    throw new NonHotelReservationEmailError(
+      "Email looks like a restaurant reservation, not a hotel reservation."
+    );
+  }
+  if (churchSignalCount >= 2 && staySignalCount < 3 && lodgingSignalCount < 2) {
+    throw new NonHotelReservationEmailError(
+      "Email looks like a church reservation or event, not a hotel reservation."
+    );
+  }
+  if (ruinsSignalCount >= 2 && staySignalCount < 3 && lodgingSignalCount < 2) {
+    throw new NonHotelReservationEmailError(
+      "Email looks like an archaeological site or ruins booking, not a hotel reservation."
+    );
+  }
+  if (museumSignalCount >= 2 && staySignalCount < 3 && lodgingSignalCount < 2) {
+    throw new NonHotelReservationEmailError(
+      "Email looks like a museum or gallery booking, not a hotel reservation."
+    );
+  }
+}
+
 function findLine(body: string, labels: string[]): string | undefined {
   const line = body.split(/\r?\n/).find((candidate) => labels.some((label) => candidate.toLowerCase().includes(label)));
   return line?.replace(/^.*?[:：]\s*/, "").trim();
@@ -221,6 +308,211 @@ function findGuestCount(body: string, labels: string[]): number | undefined {
 
 function compactNulls(metadata: ReservationMetadata): ReservationMetadata {
   return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as unknown as ReservationMetadata;
+}
+
+function countMatches(text: string, patterns: RegExp[]) {
+  return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);
+}
+
+function countTransportSignals(text: string) {
+  return countMatches(text, [
+    /\bpick[\s-]?up address\b/i,
+    /\bdrop[\s-]?off address\b/i,
+    /\bvehicle type\b/i,
+    /\bdriver(s)?\b/i,
+    /\btrain station\b/i,
+    /\bairport\b/i,
+    /\bfare\b/i,
+    /\barrivals?\b/i,
+    /\bdeparture\b/i,
+    /\bwhatsapp\b/i,
+    /\btaxi(datum)?\b/i,
+    /\btransfer\b/i,
+    /\bbooking manager\b/i,
+    /\bshuttle\b/i,
+    /\bprivate car\b/i
+  ]);
+}
+
+function countRestaurantSignals(text: string) {
+  return countMatches(text, [
+    /\brestaurant\b/i,
+    /\bdining\b/i,
+    /\btable\b/i,
+    /\bmenu\b/i,
+    /\btasting\b/i,
+    /\bchef'?s table\b/i,
+    /\bmeal time\b/i,
+    /\bparty size\b/i
+  ]);
+}
+
+function countReligiousSiteSignals(text: string) {
+  return countMatches(text, [
+    /\bchurch\b/i,
+    /\bcathedral\b/i,
+    /\bbasilica\b/i,
+    /\bchapel\b/i,
+    /\bparish\b/i,
+    /\bmass\b/i,
+    /\bworship\b/i,
+    /\babbey\b/i,
+    /\bmonastery\b/i,
+    /\bmosque\b/i,
+    /\bsynagogue\b/i,
+    /\bshrine\b/i,
+    /\bpilgrimage\b/i
+  ]);
+}
+
+function countRuinsSignals(text: string) {
+  return countMatches(text, [
+    /\bruins?\b/i,
+    /\barchaeological\b/i,
+    /\barchaeology\b/i,
+    /\bheritage site\b/i,
+    /\bcitadel\b/i,
+    /\btemple\b/i,
+    /\bsanctuary\b/i,
+    /\bfortress\b/i,
+    /\bsite ticket\b/i
+  ]);
+}
+
+function countMuseumSignals(text: string) {
+  return countMatches(text, [
+    /\bmuseum\b/i,
+    /\bgallery\b/i,
+    /\bexhibition\b/i,
+    /\bexhibit\b/i,
+    /\badmission\b/i,
+    /\bentry ticket\b/i,
+    /\baudio guide\b/i,
+    /\bvisitor(s)?\b/i
+  ]);
+}
+
+function countLandmarkOrAttractionSignals(text: string) {
+  return countMatches(text, [
+    /\bobservatory\b/i,
+    /\bobservation deck\b/i,
+    /\bviewing platform\b/i,
+    /\btheme park\b/i,
+    /\bamusement park\b/i,
+    /\baquarium\b/i,
+    /\bzoo\b/i,
+    /\btower\b/i,
+    /\btimed entry\b/i,
+    /\btime slot\b/i,
+    /\bskip-the-line\b/i,
+    /\battraction\b/i,
+    /\bentry pass\b/i,
+    /\bpark reservation\b/i
+  ]);
+}
+
+function countTourOrActivitySignals(text: string) {
+  return countMatches(text, [
+    /\btour\b/i,
+    /\bexcursion\b/i,
+    /\bguided visit\b/i,
+    /\bwalking tour\b/i,
+    /\bday trip\b/i,
+    /\bcooking class\b/i,
+    /\bworkshop\b/i,
+    /\bclass booking\b/i,
+    /\bactivity\b/i,
+    /\bexperience\b/i,
+    /\bboat trip\b/i,
+    /\bcruise\b/i,
+    /\bsnorkeling\b/i,
+    /\bdiving\b/i,
+    /\bhiking\b/i,
+    /\btrek\b/i
+  ]);
+}
+
+function countPerformanceOrSportsSignals(text: string) {
+  return countMatches(text, [
+    /\bconcert\b/i,
+    /\btheater\b/i,
+    /\btheatre\b/i,
+    /\bshow time\b/i,
+    /\bperformance\b/i,
+    /\bmatch ticket\b/i,
+    /\bstadium\b/i,
+    /\barena\b/i,
+    /\bseat number\b/i,
+    /\bticket holder\b/i
+  ]);
+}
+
+function looksLikeTransportBooking(text: string) {
+  return countTransportSignals(text) >= 2;
+}
+
+function looksLikeRestaurantBooking(text: string) {
+  return countRestaurantSignals(text) >= 2;
+}
+
+function looksLikeReligiousSiteBooking(text: string) {
+  return countReligiousSiteSignals(text) >= 2;
+}
+
+function looksLikeRuinsBooking(text: string) {
+  return countRuinsSignals(text) >= 2;
+}
+
+function looksLikeMuseumBooking(text: string) {
+  return countMuseumSignals(text) >= 2;
+}
+
+function looksLikeLandmarkOrAttractionBooking(text: string) {
+  return countLandmarkOrAttractionSignals(text) >= 2;
+}
+
+function looksLikeTourOrActivityBooking(text: string) {
+  return countTourOrActivitySignals(text) >= 2;
+}
+
+function looksLikePerformanceOrSportsBooking(text: string) {
+  return countPerformanceOrSportsSignals(text) >= 2;
+}
+
+function countHotelStayTextSignals(text: string) {
+  return countMatches(text, [
+    /\bcheck[\s-]?in\b/i,
+    /\bcheck[\s-]?out\b/i,
+    /\b\d+\s+nights?\b/i,
+    /\broom type\b/i,
+    /\broom\b/i,
+    /\bguest room\b/i,
+    /\brate plan\b/i,
+    /\bhotel reservation\b/i,
+    /\bhotel booking\b/i,
+    /\bcancellation policy\b/i,
+    /\bproperty address\b/i
+  ]);
+}
+
+function countStaySignals(text: string, metadata: ReservationMetadata) {
+  let count = 0;
+  if (metadata.checkIn || /\bcheck[\s-]?in\b|チェックイン/i.test(text)) count += 1;
+  if (metadata.checkOut || /\bcheck[\s-]?out\b|チェックアウト/i.test(text)) count += 1;
+  if (typeof metadata.nights === "number" || /\b\d+\s+nights?\b|泊/i.test(text)) count += 1;
+  if (metadata.room || /\broom\b|客室|部屋/i.test(text)) count += 1;
+  if (metadata.mealPlan || /breakfast|dinner|meal plan|room only|half board|full board|朝食|夕食|食事/i.test(text)) count += 1;
+  if (metadata.cancellationPolicy || /cancel|cancellation|返金|キャンセル/i.test(text)) count += 1;
+  return count;
+}
+
+function countLodgingSignals(text: string, metadata: ReservationMetadata) {
+  let count = 0;
+  if (/\bhotel\b|inn|resort|hostel|ryokan|lodg(e|ing)|suite hotel|guesthouse|villa|aparthotel/i.test(text)) count += 1;
+  if (/\broom\b|suite|bed type|king bed|queen bed|twin bed|villa|apartment/i.test(text)) count += 1;
+  if (/\bfront desk\b|concierge|property|resort fee|occupancy|room rate/i.test(text)) count += 1;
+  if (/\bhotel\b|inn|resort|hostel|ryokan|guesthouse|villa|aparthotel/i.test(metadata.hotelName ?? "")) count += 1;
+  return count;
 }
 
 function applyEmailDerivedFallbacks(metadata: ReservationMetadata, emailBody: string): ReservationMetadata {

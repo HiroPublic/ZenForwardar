@@ -13,6 +13,42 @@ export interface HotelSlashOffer {
   currentReservation?: CurrentReservationInfo;
 }
 
+export class HotelSlashRatesUnavailableError extends Error {
+  requestedUrl: string;
+  finalUrl: string;
+  pageTitle?: string;
+
+  constructor(options: { requestedUrl: string; finalUrl: string; pageTitle?: string }) {
+    super(
+      [
+        "HotelSlash says the lower rates are no longer available.",
+        `Requested URL: ${options.requestedUrl}`,
+        `Final URL: ${options.finalUrl}`,
+        options.pageTitle ? `Title: ${options.pageTitle}` : undefined,
+        "No proposal was created because the offer expired before it could be reviewed."
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    this.name = "HotelSlashRatesUnavailableError";
+    this.requestedUrl = options.requestedUrl;
+    this.finalUrl = options.finalUrl;
+    this.pageTitle = options.pageTitle;
+  }
+}
+
+export function isHotelSlashRatesUnavailableError(error: unknown): error is HotelSlashRatesUnavailableError {
+  return (
+    error instanceof HotelSlashRatesUnavailableError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "HotelSlashRatesUnavailableError" &&
+      "message" in error &&
+      typeof error.message === "string")
+  );
+}
+
 let loginContext: BrowserContext | undefined;
 
 export async function extractTopHotelSlashOffer(pageUrl: string): Promise<HotelSlashOffer> {
@@ -254,6 +290,13 @@ async function parseRenderedOffer(page: Awaited<ReturnType<Awaited<ReturnType<ty
         ].join(" ")
       );
     }
+    if (isHotelSlashRatesUnavailablePage(page.url(), lastText)) {
+      throw new HotelSlashRatesUnavailableError({
+        requestedUrl: originalUrl,
+        finalUrl: page.url(),
+        pageTitle: await page.title().catch(() => undefined)
+      });
+    }
     if (lastText.trim()) {
       try {
         return parseTopHotelSlashOffer(lastText, page.url());
@@ -281,6 +324,14 @@ async function parseRenderedOffer(page: Awaited<ReturnType<Awaited<ReturnType<ty
 
 function isHotelSlashLoginPage(url: string, text: string) {
   return /\/Account\/LogIn/i.test(url) || /Sign in to your account|Your password|Forgot password/i.test(text);
+}
+
+function isHotelSlashRatesUnavailablePage(url: string, text: string) {
+  return (
+    /\/Offer\/RatesNotFound/i.test(url) ||
+    /rates we found are no longer available/i.test(text) ||
+    /no worries, we'll continue to look for better deals/i.test(text)
+  );
 }
 
 function getHotelSlashProfileDir() {
