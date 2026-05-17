@@ -1,8 +1,19 @@
 import { chromium } from "playwright";
-import type { BrowserContext } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import type { CurrentReservationInfo } from "../../shared/types";
+
+const HOTELSLASH_LOGIN_URL = "https://www.hotelslash.com/Account/LogIn";
+const HOTELSLASH_TRIPS_URL = "https://www.hotelslash.com/Trips";
+const HOTELSLASH_ORIGIN = "https://www.hotelslash.com";
+type HotelSlashStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
+
+interface SavedHotelSlashAuthState {
+  savedAt: string;
+  storageState: HotelSlashStorageState;
+  sessionStorage: Record<string, string>;
+}
 
 export interface HotelSlashOffer {
   pageUrl: string;
@@ -55,17 +66,24 @@ export async function extractTopHotelSlashOffer(pageUrl: string): Promise<HotelS
   if (loginContext) {
     throw new Error("HotelSlash login window is still open. Click ログイン完了 after signing in, then run Gmail sync again.");
   }
-  const context = await chromium.launchPersistentContext(getHotelSlashProfileDir(), {
-    headless: true,
+  const authState = readSavedHotelSlashAuthState();
+  if (!authState) {
+    throw new Error("HotelSlash login session is not saved. Use HotelSlashログイン and click ログイン完了 before running Gmail sync.");
+  }
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    storageState: authState.storageState,
     viewport: { width: 1440, height: 1100 }
   });
   try {
-    const page = context.pages()[0] ?? (await context.newPage());
+    await applySavedSessionStorage(context, authState.sessionStorage);
+    const page = await context.newPage();
     await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
     await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => undefined);
     return await parseRenderedOffer(page, pageUrl);
   } finally {
     await context.close();
+    await browser.close();
   }
 }
 
@@ -73,19 +91,26 @@ export async function startHotelSlashLoginSession() {
   if (loginContext) return getHotelSlashLoginStatus();
   const profileDir = getHotelSlashProfileDir();
   fs.mkdirSync(profileDir, { recursive: true });
-  loginContext = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
-    viewport: { width: 1280, height: 900 }
+  loginContext = await launchHotelSlashContext({ headless: false, width: 1280, height: 900 });
+  const activeContext = loginContext;
+  activeContext.once("close", () => {
+    if (loginContext === activeContext) loginContext = undefined;
   });
-  const page = loginContext.pages()[0] ?? (await loginContext.newPage());
-  await page.goto("https://www.hotelslash.com/Account/LogIn", { waitUntil: "domcontentloaded", timeout: 45_000 });
+  const page = activeContext.pages()[0] ?? (await activeContext.newPage());
+  await page.goto(HOTELSLASH_LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 45_000 });
   return getHotelSlashLoginStatus();
 }
 
 export async function finishHotelSlashLoginSession() {
-  if (loginContext) {
-    await loginContext.close();
+  const context = loginContext;
+  if (!context) {
+    throw new Error("HotelSlash login window is not open. Start HotelSlashログイン and complete sign-in before clicking ログイン完了.");
+  }
+  const authState = await captureHotelSlashAuthState(context);
+  writeSavedHotelSlashAuthState(authState);
+  if (context) {
     loginContext = undefined;
+    await context.close().catch(() => undefined);
   }
   return getHotelSlashLoginStatus();
 }
@@ -273,7 +298,7 @@ function titleCaseCondition(value: string) {
     .replace(/\b[a-z]/g, (char) => char.toUpperCase());
 }
 
-async function parseRenderedOffer(page: Awaited<ReturnType<Awaited<ReturnType<typeof chromium.launch>>["newPage"]>>, originalUrl: string) {
+async function parseRenderedOffer(page: Page, originalUrl: string) {
   let lastText = "";
   let lastError: unknown;
   const deadline = Date.now() + 75_000;
@@ -336,4 +361,76 @@ function isHotelSlashRatesUnavailablePage(url: string, text: string) {
 
 function getHotelSlashProfileDir() {
   return path.resolve(process.cwd(), ".hotelslash-profile");
+}
+
+async function captureHotelSlashAuthState(context: BrowserContext): Promise<SavedHotelSlashAuthState> {
+  const page = context.pages()[0] ?? (await context.newPage());
+  await page.goto(HOTELSLASH_TRIPS_URL, { waitUntil: "domcontentloaded", timeout: 45_000 });
+  await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+  const text = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+  if (isHotelSlashLoginPage(page.url(), text)) {
+    throw new Error(
+      [
+        "HotelSlash login is not saved in the browser session yet.",
+        "Keep the HotelSlash login window open, finish signing in there, then click ログイン完了 again so the app can save the active session."
+      ].join(" ")
+    );
+  }
+  if (!/\/Trips(?:[/?#]|$)/i.test(page.url())) {
+    const title = await page.title().catch(() => "(title unavailable)");
+    throw new Error(`HotelSlash login could not be verified. Expected Trips page but got ${page.url()} (Title: ${title}).`);
+  }
+
+  return {
+    savedAt: new Date().toISOString(),
+    storageState: await context.storageState(),
+    sessionStorage: await readSessionStorage(page)
+  };
+}
+
+function launchHotelSlashContext(options: { headless: boolean; width: number; height: number }) {
+  return chromium.launchPersistentContext(getHotelSlashProfileDir(), {
+    headless: options.headless,
+    viewport: { width: options.width, height: options.height }
+  });
+}
+
+async function readSessionStorage(page: Page) {
+  return page.evaluate(() => {
+    const entries: Record<string, string> = {};
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (!key) continue;
+      const value = window.sessionStorage.getItem(key);
+      if (value !== null) entries[key] = value;
+    }
+    return entries;
+  });
+}
+
+async function applySavedSessionStorage(context: BrowserContext, sessionStorage: Record<string, string>) {
+  if (!Object.keys(sessionStorage).length) return;
+  await context.addInitScript(
+    ({ origin, entries }: { origin: string; entries: Record<string, string> }) => {
+      if (window.location.origin !== origin) return;
+      for (const [key, value] of Object.entries(entries)) {
+        window.sessionStorage.setItem(key, value);
+      }
+    },
+    { origin: HOTELSLASH_ORIGIN, entries: sessionStorage }
+  );
+}
+
+function getHotelSlashAuthStatePath() {
+  return path.resolve(process.cwd(), ".hotelslash-auth.json");
+}
+
+function readSavedHotelSlashAuthState(): SavedHotelSlashAuthState | undefined {
+  const authPath = getHotelSlashAuthStatePath();
+  if (!fs.existsSync(authPath)) return undefined;
+  return JSON.parse(fs.readFileSync(authPath, "utf8")) as SavedHotelSlashAuthState;
+}
+
+function writeSavedHotelSlashAuthState(state: SavedHotelSlashAuthState) {
+  fs.writeFileSync(getHotelSlashAuthStatePath(), JSON.stringify(state, null, 2));
 }

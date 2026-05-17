@@ -7,6 +7,16 @@ import "./styles.css";
 
 type ApiState = "idle" | "loading" | "error";
 type ShutdownState = "idle" | "closing" | "closed";
+type PendingAction =
+  | "none"
+  | "sync"
+  | "hotelslash-login-start"
+  | "hotelslash-login-finish"
+  | "approve"
+  | "notion-only"
+  | "proposal-decision"
+  | "proposal-ack"
+  | "dismiss-and-reload";
 
 interface AuthStatus {
   gmailConfigured: boolean;
@@ -25,6 +35,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<string>();
   const [editedBody, setEditedBody] = useState("");
   const [apiState, setApiState] = useState<ApiState>("idle");
+  const [pendingAction, setPendingAction] = useState<PendingAction>("none");
   const [shutdownState, setShutdownState] = useState<ShutdownState>("idle");
   const [authStatus, setAuthStatus] = useState<AuthStatus>();
   const [hotelSlashStatus, setHotelSlashStatus] = useState<HotelSlashStatus>();
@@ -66,34 +77,40 @@ function App() {
   }
 
   async function startHotelSlashLogin() {
+    setPendingAction("hotelslash-login-start");
     setApiState("loading");
-    setMessage("HotelSlashログイン用ブラウザを開いています。開いた画面で手動ログインしてください。");
+    setMessage("HotelSlashログイン用ブラウザを開いています。開いた画面で手動ログインし、ブラウザは閉じずにこのアプリへ戻ってください。");
     try {
       const response = await fetch("/api/hotelslash/login/start", { method: "POST" });
       const data = (await response.json()) as HotelSlashStatus & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "HotelSlashログイン画面を開けませんでした。");
       setHotelSlashStatus(data);
-      setMessage("HotelSlashログイン画面を開きました。ログイン後、このアプリで「ログイン完了」を押してください。");
+      setMessage("HotelSlashログイン画面を開きました。ログイン後、ブラウザは閉じずにこのアプリで「ログイン完了」を押してください。確認できたら自動で閉じます。");
       setApiState("idle");
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "HotelSlashログイン画面を開けませんでした。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function finishHotelSlashLogin() {
+    setPendingAction("hotelslash-login-finish");
     setApiState("loading");
-    setMessage("HotelSlashログイン用ブラウザを閉じています。");
+    setMessage("HotelSlashログイン状態を確認しています。確認できたらブラウザを自動で閉じます。");
     try {
       const response = await fetch("/api/hotelslash/login/finish", { method: "POST" });
       const data = (await response.json()) as HotelSlashStatus & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "HotelSlashログイン状態の保存に失敗しました。");
       setHotelSlashStatus(data);
-      setMessage("HotelSlashログインプロファイルを保存しました。Gmail同期を再実行できます。");
+      setMessage("HotelSlashログインを確認し、ブラウザを自動で閉じてプロファイルを保存しました。Gmail同期を再実行できます。");
       setApiState("idle");
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "HotelSlashログイン状態の保存に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
@@ -103,6 +120,7 @@ function App() {
       setMessage("Gmail連携が未完了です。先にGmail連携を実行してください。");
       return;
     }
+    setPendingAction("sync");
     setApiState("loading");
     setMessage("Gmail からホテル予約メールを確認しています。");
     try {
@@ -115,11 +133,14 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "同期に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function approve() {
     if (!selected) return;
+    setPendingAction("approve");
     setApiState("loading");
     setMessage("TripIt と HotelSlash へ転送しています。");
     try {
@@ -138,11 +159,14 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "転送に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function registerInNotionOnly() {
     if (!selected) return;
+    setPendingAction("notion-only");
     setApiState("loading");
     setMessage("転送せず、Notion登録とGmailのProcessed移動を実行しています。");
     try {
@@ -159,11 +183,14 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "Notion登録に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function decideProposal(decision: "accepted" | "unaccepted") {
     if (!selected) return;
+    setPendingAction("proposal-decision");
     setApiState("loading");
     setMessage(decision === "accepted" ? "提案を採用として記録しています。" : "提案を不採用として記録しています。");
     try {
@@ -182,11 +209,14 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "提案ステータスの更新に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function acknowledgeUnavailableProposal() {
     if (!selected) return;
+    setPendingAction("proposal-ack");
     setApiState("loading");
     setMessage("失効したHotelSlash提案を確認済みにして、GmailのProcessedへ移動しています。");
     try {
@@ -203,11 +233,14 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "失効した提案の確認処理に失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
   async function dismissAndReload() {
     if (!selected) return;
+    setPendingAction("dismiss-and-reload");
     setApiState("loading");
     setMessage("この候補を外して、次の候補を読み込んでいます。");
     try {
@@ -223,6 +256,8 @@ function App() {
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "候補の再読み込みに失敗しました。");
+    } finally {
+      setPendingAction("none");
     }
   }
 
@@ -257,17 +292,17 @@ function App() {
         ) : null}
 
         <button className="primary-action" onClick={sync} disabled={apiState === "loading"}>
-          {apiState === "loading" ? <Loader2 className="spin" size={18} /> : <MailSearch size={18} />}
+          {pendingAction === "sync" ? <Loader2 className="spin" size={18} /> : <MailSearch size={18} />}
           Gmail同期
         </button>
 
         <div className="hotelslash-actions">
           <button className="auth-action" onClick={startHotelSlashLogin} disabled={apiState === "loading" || hotelSlashStatus?.loginWindowOpen}>
-            {apiState === "loading" ? <Loader2 className="spin" size={17} /> : <KeyRound size={17} />}
+            {pendingAction === "hotelslash-login-start" ? <Loader2 className="spin" size={17} /> : <KeyRound size={17} />}
             HotelSlashログイン
           </button>
-          <button className="auth-action connected" onClick={finishHotelSlashLogin} disabled={apiState === "loading" || !hotelSlashStatus?.loginWindowOpen}>
-            {apiState === "loading" ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
+          <button className="auth-action connected" onClick={finishHotelSlashLogin} disabled={apiState === "loading" || !hotelSlashStatus?.profileExists}>
+            {pendingAction === "hotelslash-login-finish" ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
             ログイン完了
           </button>
         </div>

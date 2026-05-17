@@ -10,6 +10,7 @@ node_modules/
 logs/
 .cache/
 .hotelslash-profile/
+.hotelslash-auth.json
 *.log
 npm-debug.log*
 yarn-debug.log*
